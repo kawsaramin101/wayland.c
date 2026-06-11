@@ -19,21 +19,16 @@ struct wl_font {
 wl_font_t *wl_font_load(const char *path, int size_px) {
     wl_font_t *font = calloc(1, sizeof(*font));
     if (!font) return NULL;
-
     if (FT_Init_FreeType(&font->library)) {
         free(font);
         return NULL;
     }
-
     FT_Library_SetLcdFilter(font->library, FT_LCD_FILTER_DEFAULT);
-
     if (FT_New_Face(font->library, path, 0, &font->face)) {
         FT_Done_FreeType(font->library);
         free(font);
         return NULL;
     }
-
-    /* size_px as both width and height, 72 dpi */
     FT_Set_Pixel_Sizes(font->face, 0, size_px);
     font->size_px = size_px;
     return font;
@@ -53,7 +48,9 @@ void wl_font_destroy(wl_font_t *font) {
 static void blend_pixel_lcd(wl_canvas_t *canvas, int x, int y,
                              uint32_t color, uint8_t ar, uint8_t ag, uint8_t ab)
 {
-    if (x < 0 || x >= canvas->width || y < 0 || y >= canvas->height) return;
+    /* respect clip region */
+    if (x < canvas->clip_x || x >= canvas->clip_x + canvas->clip_w) return;
+    if (y < canvas->clip_y || y >= canvas->clip_y + canvas->clip_h) return;
 
     uint32_t dst = canvas->data[y * canvas->width + x];
 
@@ -65,7 +62,6 @@ static void blend_pixel_lcd(wl_canvas_t *canvas, int x, int y,
     uint8_t dst_g = (dst >>  8) & 0xFF;
     uint8_t dst_b = (dst      ) & 0xFF;
 
-    /* blend each channel independently using its own alpha */
     uint8_t out_r = (src_r * ar + dst_r * (255 - ar)) / 255;
     uint8_t out_g = (src_g * ag + dst_g * (255 - ag)) / 255;
     uint8_t out_b = (src_b * ab + dst_b * (255 - ab)) / 255;
@@ -95,7 +91,6 @@ void wl_draw_text(wl_canvas_t *canvas, wl_font_t *font,
         int glyph_x = pen_x + slot->bitmap_left;
         int glyph_y = y     - slot->bitmap_top;
 
-        /* LCD bitmap is 3x wider — every 3 bytes = R,G,B alpha for one pixel */
         int pixel_width = bmp->width / 3;
         for (int row = 0; row < (int)bmp->rows; row++) {
             for (int col = 0; col < pixel_width; col++) {
