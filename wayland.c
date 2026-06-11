@@ -18,6 +18,8 @@ struct wl_canvas {
     uint32_t *data;
     int       width;
     int       height;
+    int       clip_x, clip_y;
+    int       clip_w, clip_h;
 };
 
 struct wl_app {
@@ -142,6 +144,11 @@ static void do_draw(struct wl_app *app) {
             .data   = data,
             .width  = app->width,
             .height = app->height,
+            /* clip defaults to full canvas */
+            .clip_x = 0,
+            .clip_y = 0,
+            .clip_w = app->width,
+            .clip_h = app->height,
         };
         app->draw_fn(&canvas);
     }
@@ -214,7 +221,6 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 /* Seat capability listener                           */
 /* -------------------------------------------------- */
 
-/* forward declarations from input.c */
 extern const struct wl_pointer_listener  wl_pointer_listener;
 extern const struct wl_keyboard_listener wl_keyboard_listener;
 
@@ -232,9 +238,7 @@ static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps) {
 }
 
 static void seat_name(void *data, struct wl_seat *seat, const char *name) {
-    (void)data;
-    (void)seat;
-    (void)name;
+    (void)data; (void)seat; (void)name;
 }
 
 static const struct wl_seat_listener wl_seat_listener = {
@@ -275,9 +279,7 @@ static void registry_global(void *data, struct wl_registry *registry,
 static void registry_global_remove(void *data,
         struct wl_registry *registry, uint32_t name)
 {
-    (void)data;
-    (void)registry;
-    (void)name;
+    (void)data; (void)registry; (void)name;
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -359,23 +361,52 @@ void wl_app_destroy(wl_app_t *app) {
 }
 
 /* -------------------------------------------------- */
+/* Clipping                                           */
+/* -------------------------------------------------- */
+
+void wl_canvas_set_clip(wl_canvas_t *canvas, int x, int y, int w, int h) {
+    /* intersect requested clip with canvas bounds */
+    int x1 = x < 0 ? 0 : x;
+    int y1 = y < 0 ? 0 : y;
+    int x2 = x + w > canvas->width  ? canvas->width  : x + w;
+    int y2 = y + h > canvas->height ? canvas->height : y + h;
+    canvas->clip_x = x1;
+    canvas->clip_y = y1;
+    canvas->clip_w = x2 - x1 < 0 ? 0 : x2 - x1;
+    canvas->clip_h = y2 - y1 < 0 ? 0 : y2 - y1;
+}
+
+void wl_canvas_reset_clip(wl_canvas_t *canvas) {
+    canvas->clip_x = 0;
+    canvas->clip_y = 0;
+    canvas->clip_w = canvas->width;
+    canvas->clip_h = canvas->height;
+}
+
+/* -------------------------------------------------- */
 /* Drawing primitives                                 */
 /* -------------------------------------------------- */
 
+/* check if pixel is inside clip region */
+static inline int in_clip(wl_canvas_t *canvas, int x, int y) {
+    return x >= canvas->clip_x && x < canvas->clip_x + canvas->clip_w &&
+           y >= canvas->clip_y && y < canvas->clip_y + canvas->clip_h;
+}
+
 void wl_draw_fill(wl_canvas_t *canvas, uint32_t color) {
-    int total = canvas->width * canvas->height;
-    for (int i = 0; i < total; i++)
-        canvas->data[i] = color;
+    for (int row = canvas->clip_y; row < canvas->clip_y + canvas->clip_h; row++)
+        for (int col = canvas->clip_x; col < canvas->clip_x + canvas->clip_w; col++)
+            canvas->data[row * canvas->width + col] = color;
 }
 
 void wl_draw_rect(wl_canvas_t *canvas, int x, int y, int w, int h, uint32_t color) {
     for (int row = y; row < y + h; row++)
         for (int col = x; col < x + w; col++)
-            if (col >= 0 && col < canvas->width && row >= 0 && row < canvas->height)
+            if (in_clip(canvas, col, row))
                 canvas->data[row * canvas->width + col] = color;
 }
 
 void wl_draw_pixel(wl_canvas_t *canvas, int x, int y, uint32_t color) {
-    if (x >= 0 && x < canvas->width && y >= 0 && y < canvas->height)
+    if (in_clip(canvas, x, y))
         canvas->data[y * canvas->width + x] = color;
 }
