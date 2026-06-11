@@ -1,4 +1,4 @@
-# libwl
+# Wayland.c
 
 A minimal Wayland client library for Linux desktops. Sits between the very low level `libwayland-client` and full toolkits like SDL or GLFW.
 
