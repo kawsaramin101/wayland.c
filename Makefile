@@ -4,15 +4,28 @@ CFLAGS_PIC = $(CFLAGS) -fPIC
 LIBS    = -lwayland-client -lrt -lxkbcommon -lfreetype
 
 BUILD   = build
-LIB_A   = $(BUILD)/libwl.a
-LIB_SO  = $(BUILD)/libwl.so
+LIB_A   = $(BUILD)/libwayland_dot_c.a
+LIB_SO  = $(BUILD)/libwayland_dot_c.so
 
 XDG_SHELL_XML = /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
 XDG_DECO_XML  = /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
 
 # -------------------------------------------------- #
-# Generated protocol files                           #
+# Combined public header                             #
 # -------------------------------------------------- #
+
+$(BUILD)/wayland_dot_c.h: wayland.h input.h font.h | $(BUILD)
+	@echo "#pragma once" > $@
+	@echo "" >> $@
+	@echo "#include <stdint.h>" >> $@
+	@echo "#include <stdbool.h>" >> $@
+	@echo "#include <xkbcommon/xkbcommon.h>" >> $@
+	@echo "" >> $@
+	@grep -v '#pragma once' wayland.h | grep -v '#include ' >> $@
+	@echo "" >> $@
+	@grep -v '#pragma once' input.h   | grep -v '#include ' >> $@
+	@echo "" >> $@
+	@grep -v '#pragma once' font.h    | grep -v '#include ' >> $@
 
 $(BUILD)/xdg-shell-client-protocol.h: $(XDG_SHELL_XML) | $(BUILD)
 	wayland-scanner client-header < $< > $@
@@ -68,8 +81,8 @@ $(LIB_SO): $(LIB_OBJS)
 # Example (links against static lib)                 #
 # -------------------------------------------------- #
 
-$(BUILD)/example.o: example.c wayland.h input.h font.h | $(BUILD)
-	$(CC) $(CFLAGS) -c example.c -o $@
+$(BUILD)/example.o: example.c $(BUILD)/wayland_dot_c.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(BUILD) -c example.c -o $@
 
 $(BUILD)/example: $(BUILD)/example.o $(LIB_A)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_A) $(LIBS)
@@ -83,7 +96,7 @@ $(BUILD):
 
 all: lib example
 
-lib: $(LIB_A) $(LIB_SO)
+lib: $(LIB_A) $(LIB_SO) $(BUILD)/wayland_dot_c.h
 
 example: $(BUILD)/example
 

@@ -29,7 +29,10 @@ wl_font_t *wl_font_load(const char *path, int size_px) {
         free(font);
         return NULL;
     }
-    FT_Set_Pixel_Sizes(font->face, 0, size_px);
+    /* convert pixels to points at 96 DPI: points = pixels * 72 / 96
+       FT_Set_Char_Size takes 1/64 point units */
+    FT_F26Dot6 size_pt = (FT_F26Dot6)(size_px * 72 * 64 / 96);
+    FT_Set_Char_Size(font->face, 0, size_pt, 96, 96);
     font->size_px = size_px;
     return font;
 }
@@ -83,7 +86,7 @@ void wl_draw_text(wl_canvas_t *canvas, wl_font_t *font,
 
     for (const char *p = text; *p; p++) {
         if (FT_Load_Char(font->face, (unsigned char)*p,
-                FT_LOAD_RENDER | FT_LOAD_TARGET_LCD | FT_LOAD_FORCE_AUTOHINT))
+                FT_LOAD_RENDER | FT_LOAD_TARGET_LCD))
             continue;
 
         FT_Bitmap *bmp = &slot->bitmap;
@@ -114,7 +117,7 @@ int wl_text_width(wl_font_t *font, const char *text) {
 
     int width = 0;
     for (const char *p = text; *p; p++) {
-        if (FT_Load_Char(font->face, (unsigned char)*p, FT_LOAD_DEFAULT | FT_LOAD_FORCE_AUTOHINT))
+        if (FT_Load_Char(font->face, (unsigned char)*p, FT_LOAD_DEFAULT))
             continue;
         width += font->face->glyph->advance.x >> 6;
     }
