@@ -1,14 +1,16 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -O2
 CFLAGS_PIC = $(CFLAGS) -fPIC
-LIBS    = -lwayland-client -lrt -lxkbcommon -lfreetype
+LIBS    = -lwayland-client -lrt -lxkbcommon -lfreetype -lm
 
 BUILD   = build
 LIB_A   = $(BUILD)/libwayland_dot_c.a
 LIB_SO  = $(BUILD)/libwayland_dot_c.so
 
-XDG_SHELL_XML = /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
-XDG_DECO_XML  = /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+XDG_SHELL_XML     = /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+XDG_DECO_XML      = /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+VIEWPORTER_XML    = /usr/share/wayland-protocols/stable/viewporter/viewporter.xml
+FRAC_SCALE_XML    = /usr/share/wayland-protocols/staging/fractional-scale/fractional-scale-v1.xml
 
 # -------------------------------------------------- #
 # Combined public header                             #
@@ -27,35 +29,59 @@ $(BUILD)/wayland_dot_c.h: wayland.h input.h font.h | $(BUILD)
 	@echo "" >> $@
 	@grep -v '#pragma once' font.h    | grep -v '#include ' >> $@
 
+# -------------------------------------------------- #
+# Generated protocol files                           #
+# -------------------------------------------------- #
+
 $(BUILD)/xdg-shell-client-protocol.h: $(XDG_SHELL_XML) | $(BUILD)
 	wayland-scanner client-header < $< > $@
-
 $(BUILD)/xdg-shell-protocol.c: $(XDG_SHELL_XML) | $(BUILD)
 	wayland-scanner private-code < $< > $@
 
 $(BUILD)/xdg-decoration-client-protocol.h: $(XDG_DECO_XML) | $(BUILD)
 	wayland-scanner client-header < $< > $@
-
 $(BUILD)/xdg-decoration-protocol.c: $(XDG_DECO_XML) | $(BUILD)
+	wayland-scanner private-code < $< > $@
+
+$(BUILD)/viewporter-client-protocol.h: $(VIEWPORTER_XML) | $(BUILD)
+	wayland-scanner client-header < $< > $@
+$(BUILD)/viewporter-protocol.c: $(VIEWPORTER_XML) | $(BUILD)
+	wayland-scanner private-code < $< > $@
+
+$(BUILD)/fractional-scale-v1-client-protocol.h: $(FRAC_SCALE_XML) | $(BUILD)
+	wayland-scanner client-header < $< > $@
+$(BUILD)/fractional-scale-v1-protocol.c: $(FRAC_SCALE_XML) | $(BUILD)
 	wayland-scanner private-code < $< > $@
 
 $(BUILD)/xdg-shell-protocol.o: $(BUILD)/xdg-shell-protocol.c | $(BUILD)
 	$(CC) -w -fPIC -c $< -o $@
-
 $(BUILD)/xdg-decoration-protocol.o: $(BUILD)/xdg-decoration-protocol.c | $(BUILD)
 	$(CC) -w -fPIC -c $< -o $@
+$(BUILD)/viewporter-protocol.o: $(BUILD)/viewporter-protocol.c | $(BUILD)
+	$(CC) -w -fPIC -c $< -o $@
+$(BUILD)/fractional-scale-v1-protocol.o: $(BUILD)/fractional-scale-v1-protocol.c | $(BUILD)
+	$(CC) -w -fPIC -c $< -o $@
 
-PROTO_OBJS = $(BUILD)/xdg-shell-protocol.o $(BUILD)/xdg-decoration-protocol.o
-PROTO_HEADERS = $(BUILD)/xdg-shell-client-protocol.h $(BUILD)/xdg-decoration-client-protocol.h
+PROTO_OBJS = \
+	$(BUILD)/xdg-shell-protocol.o \
+	$(BUILD)/xdg-decoration-protocol.o \
+	$(BUILD)/viewporter-protocol.o \
+	$(BUILD)/fractional-scale-v1-protocol.o
+
+PROTO_HEADERS = \
+	$(BUILD)/xdg-shell-client-protocol.h \
+	$(BUILD)/xdg-decoration-client-protocol.h \
+	$(BUILD)/viewporter-client-protocol.h \
+	$(BUILD)/fractional-scale-v1-client-protocol.h
 
 # -------------------------------------------------- #
 # Library object files (PIC for both static+dynamic) #
 # -------------------------------------------------- #
 
-$(BUILD)/wayland.o: wayland.c wayland.h input.h $(PROTO_HEADERS) | $(BUILD)
+$(BUILD)/wayland.o: wayland.c wayland.h wayland_internal.h input.h $(PROTO_HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS_PIC) -I$(BUILD) -c wayland.c -o $@
 
-$(BUILD)/input.o: input.c input.h wayland.h | $(BUILD)
+$(BUILD)/input.o: input.c input.h wayland.h wayland_internal.h $(PROTO_HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS_PIC) -I$(BUILD) -c input.c -o $@
 
 $(BUILD)/font.o: font.c font.h wayland.h | $(BUILD)
@@ -95,11 +121,8 @@ $(BUILD):
 	mkdir -p $(BUILD)
 
 all: lib example
-
 lib: $(LIB_A) $(LIB_SO) $(BUILD)/wayland_dot_c.h
-
 example: $(BUILD)/example
-
 clean:
 	rm -rf $(BUILD)
 

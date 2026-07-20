@@ -1,50 +1,65 @@
+#define _POSIX_C_SOURCE 200112L
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/mman.h>
+#include <sys/timerfd.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
+#include "xdg-shell-client-protocol.h"
+#include "xdg-decoration-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
 #include "wayland.h"
+#include "wayland_internal.h"
 #include "input.h"
 
 /* -------------------------------------------------- */
-/* Access to wl_app internals                         */
+/* Key repeat helpers                                 */
 /* -------------------------------------------------- */
 
-/* wl_app is defined in wayland.c — we access its fields
-   via this forward declaration of the full struct.
-   Both files are part of the same library so this is fine. */
+static void repeat_start(struct wl_app *app, xkb_keysym_t sym, uint32_t codepoint) {
+    if (app->repeat_rate <= 0) return;
 
-struct wl_app {
-    struct wl_display                 *display;
-    struct wl_registry                *registry;
-    struct wl_shm                     *shm;
-    struct wl_compositor              *compositor;
-    struct xdg_wm_base                *xdg_wm_base;
-    struct zxdg_decoration_manager_v1 *decoration_manager;
-    struct wl_surface                 *surface;
-    struct xdg_surface                *xdg_surface;
-    struct xdg_toplevel               *xdg_toplevel;
-    struct wl_seat                    *seat;
-    struct wl_pointer                 *pointer;
-    struct wl_keyboard                *keyboard;
-    double                             mouse_x;
-    double                             mouse_y;
-    struct xkb_context                *xkb_context;
-    struct xkb_keymap                 *xkb_keymap;
-    struct xkb_state                  *xkb_state;
-    wl_key_fn                          key_fn;
-    void                              *key_userdata;
-    wl_mouse_move_fn                   mouse_move_fn;
-    void                              *mouse_move_userdata;
-    wl_mouse_button_fn                 mouse_button_fn;
-    void                              *mouse_button_userdata;
-    const char                        *title;
-    int                                width;
-    int                                height;
-    int                                running;
-    void                              *draw_fn;
-};
+    app->repeat_sym       = sym;
+    app->repeat_codepoint = codepoint;
+
+    if (app->repeat_fd < 0) {
+        app->repeat_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (app->repeat_fd < 0) return;
+    }
+
+    long delay_ns    = (long)app->repeat_delay * 1000000L;
+    long interval_ns = app->repeat_rate > 0
+                     ? (long)(1000000000L / app->repeat_rate)
+                     : 1000000000L;
+
+    struct itimerspec ts = {
+        .it_value    = { delay_ns / 1000000000L, delay_ns % 1000000000L },
+        .it_interval = { interval_ns / 1000000000L, interval_ns % 1000000000L },
+    };
+    timerfd_settime(app->repeat_fd, 0, &ts, NULL);
+}
+
+static void repeat_stop(struct wl_app *app) {
+    if (app->repeat_fd < 0) return;
+    struct itimerspec ts = { {0,0}, {0,0} };
+    timerfd_settime(app->repeat_fd, 0, &ts, NULL);
+    app->repeat_sym       = 0;
+    app->repeat_codepoint = 0;
+}
+
+/* called from wl_app_run when repeat_fd fires */
+void wl_app_dispatch_repeat(struct wl_app *app) {
+    if (!app->key_fn || app->repeat_sym == 0) return;
+    wl_key_event_t e = {
+        .sym       = app->repeat_sym,
+        .codepoint = app->repeat_codepoint,
+        .pressed   = true,
+    };
+    app->key_fn(&e, app->key_userdata);
+}
 
 /* -------------------------------------------------- */
 /* Pointer callbacks                                  */
@@ -90,7 +105,6 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     struct wl_app *app = data;
 
     if (app->mouse_button_fn) {
-        /* Linux input event codes: BTN_LEFT=0x110, BTN_RIGHT=0x111, BTN_MIDDLE=0x112 */
         uint32_t btn = 1;
         if      (button == 0x110) btn = 1;
         else if (button == 0x111) btn = 3;
@@ -109,7 +123,19 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
 static void pointer_axis(void *data, struct wl_pointer *pointer,
         uint32_t time, uint32_t axis, wl_fixed_t value)
 {
-    (void)data; (void)pointer; (void)time; (void)axis; (void)value;
+    (void)pointer; (void)time;
+    struct wl_app *app = data;
+
+    if (app->scroll_fn) {
+        double v = wl_fixed_to_double(value);
+        wl_scroll_event_t e = {
+            .x      = app->mouse_x,
+            .y      = app->mouse_y,
+            .dx     = (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) ? v : 0.0,
+            .dy     = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)   ? v : 0.0,
+        };
+        app->scroll_fn(&e, app->scroll_userdata);
+    }
 }
 
 static void pointer_frame(void *data, struct wl_pointer *pointer)
@@ -191,6 +217,8 @@ static void keyboard_leave(void *data, struct wl_keyboard *keyboard,
         uint32_t serial, struct wl_surface *surface)
 {
     (void)data; (void)keyboard; (void)serial; (void)surface;
+    struct wl_app *app = data;
+    repeat_stop(app);
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *keyboard,
@@ -200,19 +228,27 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
     struct wl_app *app = data;
     if (!app->xkb_state || !app->key_fn) return;
 
-    /* Wayland key codes are evdev codes, XKB expects evdev+8 */
-    uint32_t keycode = key + 8;
-    xkb_keysym_t sym = xkb_state_key_get_one_sym(app->xkb_state, keycode);
-
-    /* get unicode codepoint */
-    uint32_t codepoint = xkb_state_key_get_utf32(app->xkb_state, keycode);
+    uint32_t     keycode   = key + 8;
+    xkb_keysym_t sym       = xkb_state_key_get_one_sym(app->xkb_state, keycode);
+    uint32_t     codepoint = xkb_state_key_get_utf32(app->xkb_state, keycode);
+    bool         pressed   = (state == WL_KEYBOARD_KEY_STATE_PRESSED);
 
     wl_key_event_t e = {
         .sym       = sym,
         .codepoint = codepoint,
-        .pressed   = (state == WL_KEYBOARD_KEY_STATE_PRESSED),
+        .pressed   = pressed,
     };
     app->key_fn(&e, app->key_userdata);
+
+    if (pressed) {
+        /* check if this key should repeat */
+        if (xkb_keymap_key_repeats(app->xkb_keymap, keycode))
+            repeat_start(app, sym, codepoint);
+    } else {
+        /* stop repeat if this is the key that was repeating */
+        if (sym == app->repeat_sym)
+            repeat_stop(app);
+    }
 }
 
 static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
@@ -229,7 +265,10 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
 static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,
         int32_t rate, int32_t delay)
 {
-    (void)data; (void)keyboard; (void)rate; (void)delay;
+    (void)keyboard;
+    struct wl_app *app = data;
+    app->repeat_rate  = rate;
+    app->repeat_delay = delay;
 }
 
 const struct wl_keyboard_listener wl_keyboard_listener = {
@@ -258,4 +297,9 @@ void wl_app_on_mouse_move(wl_app_t *app, wl_mouse_move_fn fn, void *userdata) {
 void wl_app_on_mouse_button(wl_app_t *app, wl_mouse_button_fn fn, void *userdata) {
     app->mouse_button_fn       = fn;
     app->mouse_button_userdata = userdata;
+}
+
+void wl_app_on_scroll(wl_app_t *app, wl_scroll_fn fn, void *userdata) {
+    app->scroll_fn       = fn;
+    app->scroll_userdata = userdata;
 }

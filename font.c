@@ -9,7 +9,8 @@
 struct wl_font {
     FT_Library library;
     FT_Face    face;
-    int        size_px;
+    int        size_px;      /* logical size in pixels */
+    double     last_scale;   /* scale we last set on the face */
 };
 
 /* -------------------------------------------------- */
@@ -19,21 +20,27 @@ struct wl_font {
 wl_font_t *wl_font_load(const char *path, int size_px) {
     wl_font_t *font = calloc(1, sizeof(*font));
     if (!font) return NULL;
+
     if (FT_Init_FreeType(&font->library)) {
         free(font);
         return NULL;
     }
+
     FT_Library_SetLcdFilter(font->library, FT_LCD_FILTER_DEFAULT);
+
     if (FT_New_Face(font->library, path, 0, &font->face)) {
         FT_Done_FreeType(font->library);
         free(font);
         return NULL;
     }
-    /* convert pixels to points at 96 DPI: points = pixels * 72 / 96
-       FT_Set_Char_Size takes 1/64 point units */
+
+    font->size_px    = size_px;
+    font->last_scale = 1.0;
+
+    /* set initial size at scale 1.0 */
     FT_F26Dot6 size_pt = (FT_F26Dot6)(size_px * 72 * 64 / 96);
     FT_Set_Char_Size(font->face, 0, size_pt, 96, 96);
-    font->size_px = size_px;
+
     return font;
 }
 
@@ -45,13 +52,25 @@ void wl_font_destroy(wl_font_t *font) {
 }
 
 /* -------------------------------------------------- */
+/* Internal — update face size for current scale      */
+/* -------------------------------------------------- */
+
+static void font_set_scale(wl_font_t *font, double scale) {
+    if (scale == font->last_scale) return;
+    font->last_scale = scale;
+    /* physical size = logical size * scale, in 1/64 points at 96 DPI */
+    double phys_px = font->size_px * scale;
+    FT_F26Dot6 size_pt = (FT_F26Dot6)(phys_px * 72.0 * 64.0 / 96.0);
+    FT_Set_Char_Size(font->face, 0, size_pt, 96, 96);
+}
+
+/* -------------------------------------------------- */
 /* Blending                                           */
 /* -------------------------------------------------- */
 
 static void blend_pixel_lcd(wl_canvas_t *canvas, int x, int y,
                              uint32_t color, uint8_t ar, uint8_t ag, uint8_t ab)
 {
-    /* respect clip region */
     if (x < canvas->clip_x || x >= canvas->clip_x + canvas->clip_w) return;
     if (y < canvas->clip_y || y >= canvas->clip_y + canvas->clip_h) return;
 
@@ -80,6 +99,8 @@ void wl_draw_text(wl_canvas_t *canvas, wl_font_t *font,
                   int x, int y, const char *text, uint32_t color)
 {
     if (!font || !text) return;
+
+    font_set_scale(font, canvas->scale);
 
     FT_GlyphSlot slot = font->face->glyph;
     int pen_x = x;
